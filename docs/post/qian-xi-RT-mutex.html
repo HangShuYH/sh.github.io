@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html data-color-mode="light" data-dark-theme="dark" data-light-theme="light" lang="zh-CN">
+<head>
+    <meta content="text/html; charset=utf-8" http-equiv="content-type" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <link href='https://mirrors.sustech.edu.cn/cdnjs/ajax/libs/Primer/21.0.7/primer.css' rel='stylesheet' />
+    
+    <link rel="icon" href="https://github.githubassets.com/favicons/favicon.svg"><script>
+        let theme = localStorage.getItem("meek_theme") || "light";
+        document.documentElement.setAttribute("data-color-mode", theme);
+    </script>
+<meta name="description" content="# 浅析RT-mutex
+**Version: Linux 6.6.0**
+## why RT-mutex
+PREEMPT_RT是将Linux转换为RTOS的一个史诗级的补丁，从Linux 6.12开始，所有发行版都将包含实时Linux的代码。">
+<meta property="og:title" content="浅析RT-mutex">
+<meta property="og:description" content="# 浅析RT-mutex
+**Version: Linux 6.6.0**
+## why RT-mutex
+PREEMPT_RT是将Linux转换为RTOS的一个史诗级的补丁，从Linux 6.12开始，所有发行版都将包含实时Linux的代码。">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://HangShuYH.github.io/sh.github.io/post/qian-xi-RT-mutex.html">
+<meta property="og:image" content="https://github.githubassets.com/favicons/favicon.svg">
+<title>浅析RT-mutex</title>
+<link href="//unpkg.com/@wooorm/starry-night@2.1.1/style/both.css" rel="stylesheet" />
+
+
+</head>
+<style>
+body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;padding: 45px;font-size: 16px;font-family: sans-serif;line-height: 1.25;}
+#header{display:flex;padding-bottom:8px;border-bottom: 1px solid var(--borderColor-muted, var(--color-border-muted));margin-bottom: 16px;}
+#footer {margin-top:64px; text-align: center;font-size: small;}
+
+</style>
+
+<style>
+.postTitle{margin: auto 0;font-size:40px;font-weight:bold;}
+.title-right{display:flex;margin:auto 0 0 auto;}
+.title-right .circle{padding: 14px 16px;margin-right:8px;}
+#postBody{border-bottom: 1px solid var(--color-border-default);padding-bottom:36px;}
+#postBody hr{height:2px;}
+#cmButton{height:48px;margin-top:48px;}
+#comments{margin-top:64px;}
+.g-emoji{font-size:24px;}
+@media (max-width: 600px) {
+    body {padding: 8px;}
+    .postTitle{font-size:24px;}
+}
+.copy-feedback {
+    display: none;
+    position: absolute;
+    top: 10px;
+    right: 50px;
+    color: var(--color-fg-on-emphasis);
+    background-color: var(--color-fg-muted);
+    border-radius: 3px;
+    padding: 5px 8px;
+    font-size: 12px;
+}
+</style>
+
+
+
+
+<body>
+    <div id="header">
+<h1 class="postTitle">浅析RT-mutex</h1>
+<div class="title-right">
+    <a href="https://HangShuYH.github.io/sh.github.io" id="buttonHome" class="btn btn-invisible circle" title="首页">
+        <svg class="octicon" width="16" height="16">
+            <path id="pathHome" fill-rule="evenodd"></path>
+        </svg>
+    </a>
+    
+    <a href="https://github.com/HangShuYH/sh.github.io/issues/1" target="_blank" class="btn btn-invisible circle" title="Issue">
+        <svg class="octicon" width="16" height="16">
+            <path id="pathIssue" fill-rule="evenodd"></path>
+        </svg>
+    </a>
+    
+
+    <a class="btn btn-invisible circle" onclick="modeSwitch();" title="切换主题">
+        <svg class="octicon" width="16" height="16" >
+            <path id="themeSwitch" fill-rule="evenodd"></path>
+        </svg>
+    </a>
+
+</div>
+</div>
+    <div id="content">
+<div class="markdown-body" id="postBody"><h1>浅析RT-mutex</h1>
+<p><strong>Version: Linux 6.6.0</strong></p>
+<h2>why RT-mutex</h2>
+<p>PREEMPT_RT是将Linux转换为RTOS的一个史诗级的补丁，从Linux 6.12开始，所有发行版都将包含实时Linux的代码。PREEMPT_RT 的关键在于让Linux内核中不可抢占的代码尽可能减少，其中一个重要改进方向就是让spinlock变得可抢占，因此PREEMPT_RT引入了RT-mutex来代替spinlock。</p>
+<p>在CONFIG_PREEMPT_RT未开启时，spinlock的底层实现实际是raw_spinlock。在获取raw_spinlock时，内核会关抢占。低优先级的线程只要在spinlock保护的临界区内，高优先级的线程都无法抢占CPU，实时性就无法得到保证。</p>
+<p>在CONFIG_PREEMPT_RT开启时，spinlock的底层实现实际是RT-mutex。RT-mutex是一种互斥锁，因此即便线程获取了锁处于临界区内，也可以被高优先级的线程抢占。Linux中确实需要关闭抢占的代码(有一百多处)需要使用raw_spinlock而不是spinlock。</p>
+<p>与一般的互斥锁不同的点在于RT-mutex解决了unbouned priority inversion problem,即无限制优先级反转问题。</p>
+<h2>Priority Inversion</h2>
+<p>在实时操作系统中，低优先级的线程运行时，高优先级的线程无法抢占CPU执行，就产生了优先级反转问题。优先级反转的因素有很多，大多数时候都无法避免。例如，当低优先级线程获取了共享资源，高优先级线程想要获取该资源时就不得不等待低优先级线程主动释放。</p>
+<p>RT-mutex解决的是无限制优先级反转问题。无限制优先级反转问题的一个典型例子就是有三个线程A,B,C，假设P(A)&gt;P(B)&gt;P(C)。<br>
+<strong>P(A)代表线程A的优先级</strong><br>
+当A试图获取一个C已经持有的共享资源X时，A必须等待C主动释放X。但是在A等待的过程中，B不需要获取该资源且由于P(B)&gt;P(C)，B就会抢占C。注意，此时优先级低于A的B事实上在阻塞A的执行，因为C被抢占之后无法释放X。对于A来说，C释放X的时间是无法预料的，因此A的实时性就无法得到保证。更糟糕的情况是，如果有很多优先级处于A和C之间的线程，这些线程会不停抢占C，高优先级的A甚至可能被饿死。这就是无限制优先级反转问题。</p>
+<p><a href="https://zhuanlan.zhihu.com/p/146132061" rel="nofollow">优先级反转那点事儿</a>一文对优先级反转的问题有很详细的解释。</p>
+<h2>RT-mutex Design</h2>
+<h3>Priority Inheritance(PI)</h3>
+<p>RT-mutex解决优先级反转问题的方法是Priority Inheritance(PI)，即优先级继承。PI就是当高优先级线程A阻塞在锁上时，这个锁的持有线程B(低优先级)会临时继承A的优先级。线程B释放锁的时候，再将自己的优先级调整回去。</p>
+<p>还是上面的那个例子，当线程C持有线程A需要的锁时，线程A去申请获取这把锁，会导致线程C的优先级临时提升为线程A的优先级。此时线程B由于优先级低于线程C，就无法进行抢占。当线程C释放锁的时候，它的优先级被调整回原来的低优先级，线程A就可以顺利抢占线程C的执行。这样无限制优先级反转问题就被解决了。</p>
+<h3>PI chain</h3>
+<p>在真实场景下，当然不会只有3个线程和一把锁。当有一系列线程和锁参与进来时，优先级继承就需要顺着PI chain传播下去。<br>
+例如：</p>
+<pre class="notranslate"><code class="notranslate">    Process:  A, B, C, D, E
+    Mutexes:  L1, L2, L3, L4
+</code></pre>
+<p><a target="_blank" rel="noopener noreferrer" href="https://github.com/user-attachments/assets/b496e2d8-ab45-4f6e-a7cf-fd4c563b1e1e"><img src="https://github.com/user-attachments/assets/b496e2d8-ab45-4f6e-a7cf-fd4c563b1e1e" alt="chain1" style="max-width: 100%;"></a><br>
+PI chain的含义是：线程E等待锁L4，锁L4被线程D持有，线程D等待锁L3，L3被线程C持有，线程C等待锁L2，锁L2被线程B持有，线程B等待锁L1，锁L1被线程A持有。<br>
+当这个PI chain存在时，五个线程的优先级应该满足处于链右边的线程的优先级应当不低于处于链左边的优先级。只有该条件满足时，无限制优先级反转问题才不会出现。</p>
+<p>当然，PI chain并不一定是单链，因为一把锁可能会有多个线程在等待。假设此时一个线程F申请锁L2，且F也有自己持有的锁L5，L5有一个等待者G。那么以A为链尾的PI chain就会和以F为链尾的PI chain合并为一个PI chain：<br>
+<a target="_blank" rel="noopener noreferrer" href="https://github.com/user-attachments/assets/a1bcc712-5f98-438d-9d37-8e992271e693"><img src="https://github.com/user-attachments/assets/a1bcc712-5f98-438d-9d37-8e992271e693" alt="chain2" style="max-width: 100%;"></a><br>
+思考一下，当F去尝试获取锁L2时，链上的优先级应该发生怎样的变化？如果F的优先级比同样在等待锁L2的C高，那么F的优先级应该顺着链往右传播，使得线程B和线程A的优先级至少不低于F。</p>
+<p>如果是线程G去获取L2呢？这种情况不可能发生，因为一个线程不会在多个锁上等待。但是一个锁可以有多个等待者。</p>
+<p>锁的释放顺序应该是怎样的呢？当然是逆着链的顺序来释放，因为当某个线程还在等待一把锁的时候，当然不会去尝试释放它自己拥有的锁。</p>
+<h2>RT-mutex Implementation</h2>
+<h3>Data Structures</h3>
+<h4>RT-Mutex</h4>
+<p>RT-Mutex的定义如下：</p>
+<div class="highlight highlight-source-c"><pre class="notranslate"><span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_base</span> {
+	<span class="pl-smi">raw_spinlock_t</span>		<span class="pl-c1">wait_lock</span>;
+	<span class="pl-k">struct</span> <span class="pl-smi">rb_root_cached</span>   <span class="pl-c1">waiters</span>;
+	<span class="pl-k">struct</span> <span class="pl-smi">task_struct</span>	<span class="pl-c1">*</span><span class="pl-c1">owner</span>;
+};</pre></div>
+<p>rt_mutex_base中的waiters就是下文的Mutex Waiter Tree。wait_lock用以保护waiters。owner存储锁的持有者。</p>
+<h4>Mutex Waiter Tree</h4>
+<p>RT-mutex需要知道当前等待在锁上的线程有哪些。等待者使用以线程优先级为key的红黑树来存储，这样一把锁能够很快找到当前等待自己的最高优先级的线程，高优先级的线程能够优先竞争到该锁(相同优先级的线程按照FIFO的策略加入到Tree中)。</p>
+<h4>Mutex owner</h4>
+<p>RT-mutex会保存它的持有者的指针。如果mutex当前没有被持有，则owner指针为NULL。task_struct是两字节对齐的，因此RT-mutex还使用了owner的最低位来保存当前RT-mutex是否有waiters(Has Waiters flag)。<br>
+owner的状态图如下：</p>
+<markdown-accessiblity-table><table role="table">
+<thead>
+<tr>
+<th>owner</th>
+<th>bit0</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NULL</td>
+<td>0</td>
+<td>lock is free (fast acquire possible)</td>
+</tr>
+<tr>
+<td>NULL</td>
+<td>1</td>
+<td>lock is free and has waiters and the top waiter is going to take the lock</td>
+</tr>
+<tr>
+<td>taskpointer</td>
+<td>0</td>
+<td>lock is held (fast release possible)</td>
+</tr>
+<tr>
+<td>taskpointer</td>
+<td>1</td>
+<td>lock is held and has waiters</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p>当owner为NULL，bit0为0时，RT-mutex的获取通过快速路径获取锁。</p>
+<div class="highlight highlight-source-c"><pre class="notranslate"><span class="pl-k">static</span> <span class="pl-smi">__always_inline</span> <span class="pl-s1">bool</span> <span class="pl-en">rt_mutex_cmpxchg_acquire</span>(<span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_base</span> <span class="pl-c1">*</span><span class="pl-s1">lock</span>,
+						     <span class="pl-k">struct</span> <span class="pl-smi">task_struct</span> <span class="pl-c1">*</span><span class="pl-s1">old</span>,
+						     <span class="pl-k">struct</span> <span class="pl-smi">task_struct</span> <span class="pl-c1">*</span><span class="pl-s1">new</span>)
+{
+	<span class="pl-k">return</span> <span class="pl-en">try_cmpxchg_acquire</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">lock</span><span class="pl-c1">-&gt;</span><span class="pl-c1">owner</span>, <span class="pl-c1">&amp;</span><span class="pl-s1">old</span>, <span class="pl-s1">new</span>);
+}</pre></div>
+<p>owner为NULL，bit0为1是一个过渡状态。当线程要通过慢速路径去获取RT-mutex的时候，需要将bit0设置为1，以避免快速路径的获取和释放。</p>
+<p>当owner为taskpointer，bit0为0时，RT-mutex通过快速路径释放锁。</p>
+<div class="highlight highlight-source-c"><pre class="notranslate"><span class="pl-k">static</span> <span class="pl-smi">__always_inline</span> <span class="pl-s1">bool</span> <span class="pl-en">rt_mutex_cmpxchg_release</span>(<span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_base</span> <span class="pl-c1">*</span><span class="pl-s1">lock</span>,
+						     <span class="pl-k">struct</span> <span class="pl-smi">task_struct</span> <span class="pl-c1">*</span><span class="pl-s1">old</span>,
+						     <span class="pl-k">struct</span> <span class="pl-smi">task_struct</span> <span class="pl-c1">*</span><span class="pl-s1">new</span>)
+{
+	<span class="pl-k">return</span> <span class="pl-en">try_cmpxchg_release</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">lock</span><span class="pl-c1">-&gt;</span><span class="pl-c1">owner</span>, <span class="pl-c1">&amp;</span><span class="pl-s1">old</span>, <span class="pl-s1">new</span>);
+}</pre></div>
+<h4>Task PI Tree</h4>
+<p>我们先看一下task_struct中关于RT-mutex的字段：</p>
+<div class="highlight highlight-source-c"><pre class="notranslate"><span class="pl-k">struct</span> <span class="pl-smi">task_struct</span> {
+    ...
+	<span class="pl-c">/* Protection of the PI data structures: */</span>
+	<span class="pl-smi">raw_spinlock_t</span>			<span class="pl-c1">pi_lock</span>;
+
+	<span class="pl-k">struct</span> <span class="pl-smi">wake_q_node</span>		<span class="pl-c1">wake_q</span>;
+
+<span class="pl-k">#ifdef</span> <span class="pl-c1">CONFIG_RT_MUTEXES</span>
+	<span class="pl-c">/* PI waiters blocked on a rt_mutex held by this task: */</span>
+	<span class="pl-k">struct</span> <span class="pl-smi">rb_root_cached</span>		<span class="pl-c1">pi_waiters</span>;
+	<span class="pl-c">/* Updated under owner's pi_lock and rq lock */</span>
+	<span class="pl-k">struct</span> <span class="pl-smi">task_struct</span>		<span class="pl-c1">*</span><span class="pl-c1">pi_top_task</span>;
+	<span class="pl-c">/* Deadlock detection and priority inheritance handling: */</span>
+	<span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_waiter</span>		<span class="pl-c1">*</span><span class="pl-c1">pi_blocked_on</span>;
+<span class="pl-k">#endif</span>
+    ...
+}</pre></div>
+<p>为了构建PI chain，每一个线程都有用红黑树组织的pi_waiters，用以保存当前线程持有的RT-mutex的top waiters。top_waiters是指锁的最高优先级的等待线程。假设线程A持有锁L1和L2，那么A的task_struct的pi_waiters就会保存L1等待者中的最高优先级线程和L2等待者中的最高优先级线程。<br>
+为了实现优先级继承，线程并不需要知道它持有锁的所有等待者，只需要知道其中优先级最高那一个等待即可。例如，当线程B尝试去获取L1时，线程B只需要知道等待L1的最高优先级线程，如果线程B的优先级更高，则需要更新线程A的pi_waiters，如果线程B的优先级是pi_waiters中的最高的，则还需要临时调整线程A的优先级。</p>
+<h3>Implementation Details</h3>
+<h4>Taking of a mutex</h4>
+<div class="highlight highlight-source-c"><pre class="notranslate"><span class="pl-k">static</span> <span class="pl-smi">__always_inline</span> <span class="pl-s1">void</span> <span class="pl-en">rtlock_lock</span>(<span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_base</span> <span class="pl-c1">*</span><span class="pl-s1">rtm</span>)
+{
+	<span class="pl-k">if</span> (<span class="pl-en">unlikely</span>(!<span class="pl-en">rt_mutex_cmpxchg_acquire</span>(<span class="pl-s1">rtm</span>, <span class="pl-c1">NULL</span>, <span class="pl-s1">current</span>)))
+		<span class="pl-en">rtlock_slowlock</span>(<span class="pl-s1">rtm</span>);
+}</pre></div>
+<p>RT-mutex先尝试通过原子指令的快速路径获取锁，如果获取失败则通过慢速路径获取。慢速路径的获取和释放都需要获取wait_lock并且关中断。</p>
+<div class="highlight highlight-source-c"><pre class="notranslate"><span class="pl-k">static</span> <span class="pl-smi">__always_inline</span> <span class="pl-s1">void</span> <span class="pl-smi">__sched</span> <span class="pl-en">rtlock_slowlock</span>(<span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_base</span> <span class="pl-c1">*</span><span class="pl-s1">lock</span>)
+{
+	<span class="pl-smi">unsigned long</span> <span class="pl-s1">flags</span>;
+
+	<span class="pl-en">raw_spin_lock_irqsave</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">lock</span><span class="pl-c1">-&gt;</span><span class="pl-c1">wait_lock</span>, <span class="pl-s1">flags</span>);
+	<span class="pl-en">rtlock_slowlock_locked</span>(<span class="pl-s1">lock</span>);
+	<span class="pl-en">raw_spin_unlock_irqrestore</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">lock</span><span class="pl-c1">-&gt;</span><span class="pl-c1">wait_lock</span>, <span class="pl-s1">flags</span>);
+}</pre></div>
+<div class="highlight highlight-source-c"><pre class="notranslate"><span class="pl-k">static</span> <span class="pl-smi">void</span> <span class="pl-s1">__sched</span> <span class="pl-en">rtlock_slowlock_locked</span>(<span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_base</span> <span class="pl-c1">*</span><span class="pl-s1">lock</span>)
+{
+	<span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_waiter</span> <span class="pl-s1">waiter</span>;
+	<span class="pl-k">struct</span> <span class="pl-smi">task_struct</span> <span class="pl-c1">*</span><span class="pl-s1">owner</span>;
+
+	<span class="pl-en">lockdep_assert_held</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">lock</span><span class="pl-c1">-&gt;</span><span class="pl-c1">wait_lock</span>);
+
+	<span class="pl-k">if</span> (<span class="pl-en">try_to_take_rt_mutex</span>(<span class="pl-s1">lock</span>, <span class="pl-s1">current</span>, <span class="pl-c1">NULL</span>))
+		<span class="pl-k">return</span>;
+
+	<span class="pl-en">rt_mutex_init_rtlock_waiter</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">waiter</span>);
+
+	<span class="pl-c">/* Save current state and set state to TASK_RTLOCK_WAIT */</span>
+	<span class="pl-en">current_save_and_set_rtlock_wait_state</span>();
+
+	<span class="pl-en">trace_contention_begin</span>(<span class="pl-s1">lock</span>, <span class="pl-c1">LCB_F_RT</span>);
+
+	<span class="pl-en">task_blocks_on_rt_mutex</span>(<span class="pl-s1">lock</span>, <span class="pl-c1">&amp;</span><span class="pl-s1">waiter</span>, <span class="pl-s1">current</span>, <span class="pl-c1">NULL</span>, <span class="pl-c1">RT_MUTEX_MIN_CHAINWALK</span>);
+
+	<span class="pl-k">for</span> (;;) {
+		<span class="pl-c">/* Try to acquire the lock again */</span>
+		<span class="pl-k">if</span> (<span class="pl-en">try_to_take_rt_mutex</span>(<span class="pl-s1">lock</span>, <span class="pl-s1">current</span>, <span class="pl-c1">&amp;</span><span class="pl-s1">waiter</span>))
+			<span class="pl-k">break</span>;
+
+		<span class="pl-k">if</span> (<span class="pl-c1">&amp;</span><span class="pl-s1">waiter</span> <span class="pl-c1">==</span> <span class="pl-en">rt_mutex_top_waiter</span>(<span class="pl-s1">lock</span>))
+			<span class="pl-s1">owner</span> <span class="pl-c1">=</span> <span class="pl-en">rt_mutex_owner</span>(<span class="pl-s1">lock</span>);
+		<span class="pl-k">else</span>
+			<span class="pl-s1">owner</span> <span class="pl-c1">=</span> <span class="pl-c1">NULL</span>;
+		<span class="pl-en">raw_spin_unlock_irq</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">lock</span><span class="pl-c1">-&gt;</span><span class="pl-c1">wait_lock</span>);
+
+		<span class="pl-k">if</span> (!<span class="pl-s1">owner</span> <span class="pl-c1">||</span> !<span class="pl-en">rtmutex_spin_on_owner</span>(<span class="pl-s1">lock</span>, <span class="pl-c1">&amp;</span><span class="pl-s1">waiter</span>, <span class="pl-s1">owner</span>))
+			<span class="pl-en">schedule_rtlock</span>();
+
+		<span class="pl-en">raw_spin_lock_irq</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">lock</span><span class="pl-c1">-&gt;</span><span class="pl-c1">wait_lock</span>);
+		<span class="pl-en">set_current_state</span>(<span class="pl-c1">TASK_RTLOCK_WAIT</span>);
+	}
+
+	<span class="pl-c">/* Restore the task state */</span>
+	<span class="pl-en">current_restore_rtlock_saved_state</span>();
+
+	<span class="pl-c">/*</span>
+<span class="pl-c">	 * try_to_take_rt_mutex() sets the waiter bit unconditionally.</span>
+<span class="pl-c">	 * We might have to fix that up:</span>
+<span class="pl-c">	 */</span>
+	<span class="pl-en">fixup_rt_mutex_waiters</span>(<span class="pl-s1">lock</span>, true);
+	<span class="pl-en">debug_rt_mutex_free_waiter</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">waiter</span>);
+
+	<span class="pl-en">trace_contention_end</span>(<span class="pl-s1">lock</span>, <span class="pl-c1">0</span>);
+}</pre></div>
+<p>由于有些体系结构不支持cmpxchg的快速路径，所以慢速路径首先会调用try_to_take_rt_mutex函数去获取锁。在慢速路径中，每当线程尝试获取锁时，都会调用try_to_take_rt_mutex。<br>
+try_to_take_mutex首先会将owner的bit0设置为1以避免快速路径。在两种情况下try_to_take_mutex会成功获取到锁：(1)锁没有owner，即锁没有被持有。(2)当前线程是锁的waiters中优先级最高的。<br>
+当前线程通过try_to_take_mutex获取锁时，需要将锁的top waiter加入到当前线程的pi_waiters中，然后将锁的owner修改为自己。</p>
+<div class="highlight highlight-source-c"><pre class="notranslate"><span class="pl-k">static</span> <span class="pl-smi">int</span> <span class="pl-s1">__sched</span>
+<span class="pl-en">try_to_take_rt_mutex</span>(<span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_base</span> <span class="pl-c1">*</span><span class="pl-s1">lock</span>, <span class="pl-k">struct</span> <span class="pl-smi">task_struct</span> <span class="pl-c1">*</span><span class="pl-s1">task</span>,
+		     <span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_waiter</span> <span class="pl-c1">*</span><span class="pl-s1">waiter</span>)
+{
+	<span class="pl-en">lockdep_assert_held</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">lock</span><span class="pl-c1">-&gt;</span><span class="pl-c1">wait_lock</span>);
+
+	<span class="pl-c">/*</span>
+<span class="pl-c">	 * Before testing whether we can acquire @lock, we set the</span>
+<span class="pl-c">	 * RT_MUTEX_HAS_WAITERS bit in @lock-&gt;owner. This forces all</span>
+<span class="pl-c">	 * other tasks which try to modify @lock into the slow path</span>
+<span class="pl-c">	 * and they serialize on @lock-&gt;wait_lock.</span>
+<span class="pl-c">	 *</span>
+<span class="pl-c">	 * The RT_MUTEX_HAS_WAITERS bit can have a transitional state</span>
+<span class="pl-c">	 * as explained at the top of this file if and only if:</span>
+<span class="pl-c">	 *</span>
+<span class="pl-c">	 * - There is a lock owner. The caller must fixup the</span>
+<span class="pl-c">	 *   transient state if it does a trylock or leaves the lock</span>
+<span class="pl-c">	 *   function due to a signal or timeout.</span>
+<span class="pl-c">	 *</span>
+<span class="pl-c">	 * - @task acquires the lock and there are no other</span>
+<span class="pl-c">	 *   waiters. This is undone in rt_mutex_set_owner(@task) at</span>
+<span class="pl-c">	 *   the end of this function.</span>
+<span class="pl-c">	 */</span>
+	<span class="pl-en">mark_rt_mutex_waiters</span>(<span class="pl-s1">lock</span>);
+
+	<span class="pl-c">/*</span>
+<span class="pl-c">	 * If @lock has an owner, give up.</span>
+<span class="pl-c">	 */</span>
+	<span class="pl-k">if</span> (<span class="pl-en">rt_mutex_owner</span>(<span class="pl-s1">lock</span>))
+		<span class="pl-k">return</span> <span class="pl-c1">0</span>;
+
+	<span class="pl-c">/*</span>
+<span class="pl-c">	 * If @waiter != NULL, @task has already enqueued the waiter</span>
+<span class="pl-c">	 * into @lock waiter tree. If @waiter == NULL then this is a</span>
+<span class="pl-c">	 * trylock attempt.</span>
+<span class="pl-c">	 */</span>
+	<span class="pl-k">if</span> (<span class="pl-s1">waiter</span>) {
+		<span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_waiter</span> <span class="pl-c1">*</span><span class="pl-s1">top_waiter</span> <span class="pl-c1">=</span> <span class="pl-en">rt_mutex_top_waiter</span>(<span class="pl-s1">lock</span>);
+
+		<span class="pl-c">/*</span>
+<span class="pl-c">		 * If waiter is the highest priority waiter of @lock,</span>
+<span class="pl-c">		 * or allowed to steal it, take it over.</span>
+<span class="pl-c">		 */</span>
+		<span class="pl-k">if</span> (<span class="pl-s1">waiter</span> <span class="pl-c1">==</span> <span class="pl-s1">top_waiter</span> <span class="pl-c1">||</span> <span class="pl-en">rt_mutex_steal</span>(<span class="pl-s1">waiter</span>, <span class="pl-s1">top_waiter</span>)) {
+			<span class="pl-c">/*</span>
+<span class="pl-c">			 * We can acquire the lock. Remove the waiter from the</span>
+<span class="pl-c">			 * lock waiters tree.</span>
+<span class="pl-c">			 */</span>
+			<span class="pl-en">rt_mutex_dequeue</span>(<span class="pl-s1">lock</span>, <span class="pl-s1">waiter</span>);
+		} <span class="pl-k">else</span> {
+			<span class="pl-k">return</span> <span class="pl-c1">0</span>;
+		}
+	} <span class="pl-k">else</span> {
+		<span class="pl-c">/*</span>
+<span class="pl-c">		 * If the lock has waiters already we check whether @task is</span>
+<span class="pl-c">		 * eligible to take over the lock.</span>
+<span class="pl-c">		 *</span>
+<span class="pl-c">		 * If there are no other waiters, @task can acquire</span>
+<span class="pl-c">		 * the lock.  @task-&gt;pi_blocked_on is NULL, so it does</span>
+<span class="pl-c">		 * not need to be dequeued.</span>
+<span class="pl-c">		 */</span>
+		<span class="pl-k">if</span> (<span class="pl-en">rt_mutex_has_waiters</span>(<span class="pl-s1">lock</span>)) {
+			<span class="pl-c">/* Check whether the trylock can steal it. */</span>
+			<span class="pl-k">if</span> (!<span class="pl-en">rt_mutex_steal</span>(<span class="pl-en">task_to_waiter</span>(<span class="pl-s1">task</span>),
+					    <span class="pl-en">rt_mutex_top_waiter</span>(<span class="pl-s1">lock</span>)))
+				<span class="pl-k">return</span> <span class="pl-c1">0</span>;
+
+			<span class="pl-c">/*</span>
+<span class="pl-c">			 * The current top waiter stays enqueued. We</span>
+<span class="pl-c">			 * don't have to change anything in the lock</span>
+<span class="pl-c">			 * waiters order.</span>
+<span class="pl-c">			 */</span>
+		} <span class="pl-k">else</span> {
+			<span class="pl-c">/*</span>
+<span class="pl-c">			 * No waiters. Take the lock without the</span>
+<span class="pl-c">			 * pi_lock dance.@task-&gt;pi_blocked_on is NULL</span>
+<span class="pl-c">			 * and we have no waiters to enqueue in @task</span>
+<span class="pl-c">			 * pi waiters tree.</span>
+<span class="pl-c">			 */</span>
+			goto takeit;
+		}
+	}
+
+	<span class="pl-c">/*</span>
+<span class="pl-c">	 * Clear @task-&gt;pi_blocked_on. Requires protection by</span>
+<span class="pl-c">	 * @task-&gt;pi_lock. Redundant operation for the @waiter == NULL</span>
+<span class="pl-c">	 * case, but conditionals are more expensive than a redundant</span>
+<span class="pl-c">	 * store.</span>
+<span class="pl-c">	 */</span>
+	<span class="pl-en">raw_spin_lock</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">task</span><span class="pl-c1">-&gt;</span><span class="pl-c1">pi_lock</span>);
+	<span class="pl-s1">task</span><span class="pl-c1">-&gt;</span><span class="pl-c1">pi_blocked_on</span> <span class="pl-c1">=</span> <span class="pl-c1">NULL</span>;
+	<span class="pl-c">/*</span>
+<span class="pl-c">	 * Finish the lock acquisition. @task is the new owner. If</span>
+<span class="pl-c">	 * other waiters exist we have to insert the highest priority</span>
+<span class="pl-c">	 * waiter into @task-&gt;pi_waiters tree.</span>
+<span class="pl-c">	 */</span>
+	<span class="pl-k">if</span> (<span class="pl-en">rt_mutex_has_waiters</span>(<span class="pl-s1">lock</span>))
+		<span class="pl-en">rt_mutex_enqueue_pi</span>(<span class="pl-s1">task</span>, <span class="pl-en">rt_mutex_top_waiter</span>(<span class="pl-s1">lock</span>));
+	<span class="pl-en">raw_spin_unlock</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">task</span><span class="pl-c1">-&gt;</span><span class="pl-c1">pi_lock</span>);
+
+takeit:
+	<span class="pl-c">/*</span>
+<span class="pl-c">	 * This either preserves the RT_MUTEX_HAS_WAITERS bit if there</span>
+<span class="pl-c">	 * are still waiters or clears it.</span>
+<span class="pl-c">	 */</span>
+	<span class="pl-en">rt_mutex_set_owner</span>(<span class="pl-s1">lock</span>, <span class="pl-s1">task</span>);
+
+	<span class="pl-k">return</span> <span class="pl-c1">1</span>;
+}</pre></div>
+<p>try_to_take_rt_mutex失败后，当前线程调用rt_mutex_init_rtlock_waiter设置waiter的task为当前线程，lock为需要获取的锁，waiter的rbtree node设置为当前线程的优先级，然后调用task_blocks_on_rt_mutex将自己阻塞在锁上。(task_blocks_on_rt_mutex函数代码较长，就不贴代码了)<br>
+如果当前线程是当前正在等待该锁的最高优先级线程，删除来自所有者的 pi_waiters 的前一个顶级等待线程（如果存在），并将当前线程添加到owner的pi_waiters中。由于owner的 pi_waiter发生变化，调用rt_mutex_adjust_prio(后续会详细说明该函数)来确定是否需要调整owner的优先级。如果owner也阻塞在锁上，且owner的pi_waiters发生了变化，则需要调用rt_mutex_adjust_prio_chain沿着PI chain更新链上线程的优先级。</p>
+<p>随后当前线程进入无限的for循环中，每次在循环开始时，lock都会尝试去获取锁。如果当前线程是锁的top_waiter，则会自旋等待，否则睡眠。</p>
+<h4>Unlocking the Mutex</h4>
+<p>RT-mutex的unlock和lock一样，先尝试通过cmpxchg的快速路径(快速路径要求owner为NULL，bit0为0)，如果快速路径失败，则进入慢速路径。</p>
+<div class="highlight highlight-source-c"><pre class="notranslate"><span class="pl-k">static</span> <span class="pl-smi">__always_inline</span> <span class="pl-s1">void</span> <span class="pl-en">__rt_mutex_unlock</span>(<span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_base</span> <span class="pl-c1">*</span><span class="pl-s1">lock</span>)
+{
+	<span class="pl-k">if</span> (<span class="pl-en">likely</span>(<span class="pl-en">rt_mutex_cmpxchg_release</span>(<span class="pl-s1">lock</span>, <span class="pl-s1">current</span>, <span class="pl-c1">NULL</span>)))
+		<span class="pl-k">return</span>;
+
+	<span class="pl-en">rt_mutex_slowunlock</span>(<span class="pl-s1">lock</span>);
+}</pre></div>
+<p>如果锁没有waiters，则只需要将锁的owner设置为NULL(这部分代码比较微妙，建议仔细阅读一下注释)。<br>
+如果锁有waiters，则需要将锁的top_waiter移除出锁的waiters Tree和owner的pi_waiters Tree。然后唤醒该线程即可。</p>
+<div class="highlight highlight-source-c"><pre class="notranslate"><span class="pl-k">static</span> <span class="pl-smi">void</span> <span class="pl-s1">__sched</span> <span class="pl-en">rt_mutex_slowunlock</span>(<span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_base</span> <span class="pl-c1">*</span><span class="pl-s1">lock</span>)
+{
+	<span class="pl-en">DEFINE_RT_WAKE_Q</span>(<span class="pl-s1">wqh</span>);
+	<span class="pl-smi">unsigned long</span> <span class="pl-s1">flags</span>;
+
+	<span class="pl-c">/* irqsave required to support early boot calls */</span>
+	<span class="pl-en">raw_spin_lock_irqsave</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">lock</span><span class="pl-c1">-&gt;</span><span class="pl-c1">wait_lock</span>, <span class="pl-s1">flags</span>);
+
+	<span class="pl-en">debug_rt_mutex_unlock</span>(<span class="pl-s1">lock</span>);
+
+	<span class="pl-k">while</span> (!<span class="pl-en">rt_mutex_has_waiters</span>(<span class="pl-s1">lock</span>)) {
+		<span class="pl-c">/* Drops lock-&gt;wait_lock ! */</span>
+		<span class="pl-k">if</span> (<span class="pl-en">unlock_rt_mutex_safe</span>(<span class="pl-s1">lock</span>, <span class="pl-s1">flags</span>) <span class="pl-c1">==</span> true)
+			<span class="pl-k">return</span>;
+		<span class="pl-c">/* Relock the rtmutex and try again */</span>
+		<span class="pl-en">raw_spin_lock_irqsave</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">lock</span><span class="pl-c1">-&gt;</span><span class="pl-c1">wait_lock</span>, <span class="pl-s1">flags</span>);
+	}
+
+	<span class="pl-c">/*</span>
+<span class="pl-c">	 * The wakeup next waiter path does not suffer from the above</span>
+<span class="pl-c">	 * race. See the comments there.</span>
+<span class="pl-c">	 *</span>
+<span class="pl-c">	 * Queue the next waiter for wakeup once we release the wait_lock.</span>
+<span class="pl-c">	 */</span>
+	<span class="pl-en">mark_wakeup_next_waiter</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">wqh</span>, <span class="pl-s1">lock</span>);
+	<span class="pl-en">raw_spin_unlock_irqrestore</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">lock</span><span class="pl-c1">-&gt;</span><span class="pl-c1">wait_lock</span>, <span class="pl-s1">flags</span>);
+
+	<span class="pl-en">rt_mutex_wake_up_q</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">wqh</span>);
+}</pre></div>
+<h4>Priority adjustments</h4>
+<p>rt_mutex_adjust_prio函数用来临时调整一个线程的优先级，前面我们提到，如果当前线程是正在等待锁的最高优先级线程，它需要将自己加入到锁的owner的pi_waiters中。由于owner的pi_waiters发生改变，需要调用rt_mutex_adjust_prio更新owner的优先级。rt_mutex_setprio是最终真正更新线程优先级的函数。</p>
+<div class="highlight highlight-source-c"><pre class="notranslate"><span class="pl-k">static</span> <span class="pl-smi">__always_inline</span> <span class="pl-s1">void</span> <span class="pl-en">rt_mutex_adjust_prio</span>(<span class="pl-k">struct</span> <span class="pl-smi">rt_mutex_base</span> <span class="pl-c1">*</span><span class="pl-s1">lock</span>,
+						 <span class="pl-k">struct</span> <span class="pl-smi">task_struct</span> <span class="pl-c1">*</span><span class="pl-s1">p</span>)
+{
+	<span class="pl-k">struct</span> <span class="pl-smi">task_struct</span> <span class="pl-c1">*</span><span class="pl-s1">pi_task</span> <span class="pl-c1">=</span> <span class="pl-c1">NULL</span>;
+
+	<span class="pl-en">lockdep_assert_held</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">lock</span><span class="pl-c1">-&gt;</span><span class="pl-c1">wait_lock</span>);
+	<span class="pl-en">lockdep_assert</span>(<span class="pl-en">rt_mutex_owner</span>(<span class="pl-s1">lock</span>) <span class="pl-c1">==</span> <span class="pl-s1">p</span>);
+	<span class="pl-en">lockdep_assert_held</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">p</span><span class="pl-c1">-&gt;</span><span class="pl-c1">pi_lock</span>);
+
+	<span class="pl-k">if</span> (<span class="pl-en">task_has_pi_waiters</span>(<span class="pl-s1">p</span>))
+		<span class="pl-s1">pi_task</span> <span class="pl-c1">=</span> <span class="pl-en">task_top_pi_waiter</span>(<span class="pl-s1">p</span>)<span class="pl-c1">-&gt;</span><span class="pl-c1">task</span>;
+
+	<span class="pl-en">rt_mutex_setprio</span>(<span class="pl-s1">p</span>, <span class="pl-s1">pi_task</span>);
+}</pre></div>
+<p>如果owner的优先级被更新且也被阻塞在RT-mutex上(即owner不是链上的最后一个线程，还需要随着链更新其它线程的优先级)，或者需要检测死锁，则还需要调用rt_mutex_adjust_prio_chain。</p>
+<h3>Other Issues</h3>
+<h4>Per CPU Variables</h4>
+<p>现在的spinlock不会禁止内核抢占，所以对per-cpu变量的使用需要额外小心，线程被抢占后可能被调度到其它CPU上执行，这时per cpu变量就出错了。因此需要使用per-cpu lock来保护per-cpu变量。</p>
+<h4>Task State</h4>
+<p>由于现在spinlock会发生睡眠，在sched函数中，会将task的state修改为TASK_RUNNING。这时候可能会发生错误，考虑下面这段代码：</p>
+<div class="highlight highlight-source-c"><pre class="notranslate"><span class="pl-en">spin_lock</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">mylock1</span>);
+<span class="pl-s1">current</span><span class="pl-c1">-&gt;</span><span class="pl-c1">state</span> <span class="pl-c1">=</span> <span class="pl-c1">TASK_UNINTERRUPTIBLE</span>;
+<span class="pl-en">spin_lock</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">mylock2</span>);
+<span class="pl-en">blah</span>();
+<span class="pl-en">spin_unlock</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">mylock2</span>);
+<span class="pl-en">spin_unlock</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">mylock1</span>);</pre></div>
+<p>blah函数可能预期current-&gt;state是TASK_UNINTERRUPTIBLE，然后由于spinlock的睡眠，current-&gt;state被sched函数修改为了TASK_RUNNING，就有可能会出现意料不到的错误。</p>
+<p>解决办法是在慢速路径中调用current_save_and_set_rtlock_wait_state函数将当前线程的state保存到saved_state中。在线程被唤醒后，将根据情况判断是将线程的state恢复为saved_state或者设置为TASK_RUNNING。</p>
+<h2>References</h2>
+<p><a href="https://zhuanlan.zhihu.com/p/146132061" rel="nofollow">优先级反转那点事儿</a><br>
+<a href="https://lwn.net/Articles/146861/" rel="nofollow">A realtime preemption overview</a><br>
+<a href="https://docs.kernel.org/locking/rt-mutex-design.html" rel="nofollow">rt-mutex-design</a><br>
+<a href="https://docs.kernel.org/locking/rt-mutex.html" rel="nofollow">rt-mutex</a></p></div>
+<div style="font-size:small;margin-top:8px;float:right;"></div>
+
+<button class="btn btn-block" type="button" onclick="openComments()" id="cmButton">评论</button>
+<div class="comments" id="comments"></div>
+
+</div>
+    <div id="footer"><div id="footer1">Copyright © <span id="copyrightYear"></span> <a href="https://HangShuYH.github.io/sh.github.io">Blog Title</a></div>
+<div id="footer2">
+    <span id="runday"></span><span>Powered by <a href="https://meekdai.com/Gmeek.html" target="_blank">Gmeek</a></span>
+</div>
+
+<script>
+var now=new Date();
+document.getElementById("copyrightYear").innerHTML=now.getFullYear();
+
+if(""!=""){
+    var startSite=new Date("");
+    var diff=now.getTime()-startSite.getTime();
+    var diffDay=Math.floor(diff/(1000*60*60*24));
+    document.getElementById("runday").innerHTML="网站运行"+diffDay+"天"+" • ";
+}
+</script></div>
+</body>
+<script>
+var IconList={'sun': 'M8 10.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM8 12a4 4 0 100-8 4 4 0 000 8zM8 0a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0V.75A.75.75 0 018 0zm0 13a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 018 13zM2.343 2.343a.75.75 0 011.061 0l1.06 1.061a.75.75 0 01-1.06 1.06l-1.06-1.06a.75.75 0 010-1.06zm9.193 9.193a.75.75 0 011.06 0l1.061 1.06a.75.75 0 01-1.06 1.061l-1.061-1.06a.75.75 0 010-1.061zM16 8a.75.75 0 01-.75.75h-1.5a.75.75 0 010-1.5h1.5A.75.75 0 0116 8zM3 8a.75.75 0 01-.75.75H.75a.75.75 0 010-1.5h1.5A.75.75 0 013 8zm10.657-5.657a.75.75 0 010 1.061l-1.061 1.06a.75.75 0 11-1.06-1.06l1.06-1.06a.75.75 0 011.06 0zm-9.193 9.193a.75.75 0 010 1.06l-1.06 1.061a.75.75 0 11-1.061-1.06l1.06-1.061a.75.75 0 011.061 0z', 'moon': 'M9.598 1.591a.75.75 0 01.785-.175 7 7 0 11-8.967 8.967.75.75 0 01.961-.96 5.5 5.5 0 007.046-7.046.75.75 0 01.175-.786zm1.616 1.945a7 7 0 01-7.678 7.678 5.5 5.5 0 107.678-7.678z', 'sync': 'M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z', 'home': 'M6.906.664a1.749 1.749 0 0 1 2.187 0l5.25 4.2c.415.332.657.835.657 1.367v7.019A1.75 1.75 0 0 1 13.25 15h-3.5a.75.75 0 0 1-.75-.75V9H7v5.25a.75.75 0 0 1-.75.75h-3.5A1.75 1.75 0 0 1 1 13.25V6.23c0-.531.242-1.034.657-1.366l5.25-4.2Zm1.25 1.171a.25.25 0 0 0-.312 0l-5.25 4.2a.25.25 0 0 0-.094.196v7.019c0 .138.112.25.25.25H5.5V8.25a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 .75.75v5.25h2.75a.25.25 0 0 0 .25-.25V6.23a.25.25 0 0 0-.094-.195Z', 'github': 'M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z', 'copy': 'M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z', 'check': 'M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z'};
+var utterancesLoad=0;
+
+let themeSettings={
+    "dark": ["dark","moon","#00f0ff","dark-blue"],
+    "light": ["light","sun","#ff5000","github-light"],
+    "auto": ["auto","sync","","preferred-color-scheme"]
+};
+function changeTheme(mode, icon, color, utheme){
+    document.documentElement.setAttribute("data-color-mode",mode);
+    document.getElementById("themeSwitch").setAttribute("d",value=IconList[icon]);
+    document.getElementById("themeSwitch").parentNode.style.color=color;
+    if(utterancesLoad==1){utterancesTheme(utheme);}
+}
+function modeSwitch(){
+    let currentMode=document.documentElement.getAttribute('data-color-mode');
+    let newMode = currentMode === "light" ? "dark" : currentMode === "dark" ? "auto" : "light";
+    localStorage.setItem("meek_theme", newMode);
+    if(themeSettings[newMode]){
+        changeTheme(...themeSettings[newMode]);
+    }
+}
+function utterancesTheme(theme){
+    const message={type:'set-theme',theme: theme};
+    const iframe=document.getElementsByClassName('utterances-frame')[0];
+    iframe.contentWindow.postMessage(message,'https://utteranc.es');
+}
+if(themeSettings[theme]){changeTheme(...themeSettings[theme]);}
+console.log("\n %c Gmeek last https://github.com/Meekdai/Gmeek \n","padding:5px 0;background:#02d81d;color:#fff");
+</script>
+
+<script>
+document.getElementById("pathHome").setAttribute("d",IconList["home"]);
+document.getElementById("pathIssue").setAttribute("d",IconList["github"]);
+
+
+
+function openComments(){
+    cm=document.getElementById("comments");
+    cmButton=document.getElementById("cmButton");
+    cmButton.innerHTML="loading";
+    span=document.createElement("span");
+    span.setAttribute("class","AnimatedEllipsis");
+    cmButton.appendChild(span);
+
+    script=document.createElement("script");
+    script.setAttribute("src","https://utteranc.es/client.js");
+    script.setAttribute("repo","HangShuYH/sh.github.io");
+    script.setAttribute("issue-term","title");
+    
+    if(localStorage.getItem("meek_theme")=="dark"){script.setAttribute("theme","dark-blue");}
+    else if(localStorage.getItem("meek_theme")=="light") {script.setAttribute("theme","github-light");}
+    else{script.setAttribute("theme","preferred-color-scheme");}
+    
+    script.setAttribute("crossorigin","anonymous");
+    script.setAttribute("async","");
+    cm.appendChild(script);
+
+    int=self.setInterval("iFrameLoading()",200);
+}
+
+function iFrameLoading(){
+    var utterances=document.getElementsByClassName('utterances');
+    if(utterances.length==1){
+        if(utterances[0].style.height!=""){
+            utterancesLoad=1;
+            int=window.clearInterval(int);
+            document.getElementById("cmButton").style.display="none";
+            console.log("utterances Load OK");
+        }
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const createClipboardHTML = (codeContent, additionalClasses = '') => `
+        <pre class="notranslate"><code class="notranslate">${codeContent}</code></pre>
+        <div class="clipboard-container position-absolute right-0 top-0 ${additionalClasses}">
+            <clipboard-copy class="ClipboardButton btn m-2 p-0" role="button" style="display: inherit;">
+                <svg height="16" width="16" class="octicon octicon-copy m-2"><path d="${IconList["copy"]}"></path></svg>
+                <svg height="16" width="16" class="octicon octicon-check color-fg-success m-2 d-none"><path d="${IconList["check"]}"></path></svg>
+            </clipboard-copy>
+            <div class="copy-feedback">Copied!</div>
+        </div>
+    `;
+
+    const handleCodeElements = (selector = '') => {
+        document.querySelectorAll(selector).forEach(codeElement => {
+            const codeContent = codeElement.innerHTML;
+            const newStructure = document.createElement('div');
+            newStructure.className = 'snippet-clipboard-content position-relative overflow-auto';
+            newStructure.innerHTML = createClipboardHTML(codeContent);
+
+            const parentElement = codeElement.parentElement;
+            if (selector.includes('highlight')) {
+                parentElement.insertBefore(newStructure, codeElement.nextSibling);
+                parentElement.removeChild(codeElement);
+            } else {
+                parentElement.parentElement.replaceChild(newStructure, parentElement);
+            }
+        });
+    };
+
+    handleCodeElements('pre.notranslate > code.notranslate');
+    handleCodeElements('div.highlight > pre.notranslate');
+
+    let currentFeedback = null;
+    document.querySelectorAll('clipboard-copy').forEach(copyButton => {
+        copyButton.addEventListener('click', () => {
+            const codeContent = copyButton.closest('.snippet-clipboard-content').innerText;
+            const tempTextArea = document.createElement('textarea');
+            tempTextArea.value = codeContent;
+            document.body.appendChild(tempTextArea);
+            tempTextArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(tempTextArea);
+
+            const copyIcon = copyButton.querySelector('.octicon-copy');
+            const checkIcon = copyButton.querySelector('.octicon-check');
+            const copyFeedback = copyButton.nextElementSibling;
+
+            if (currentFeedback && currentFeedback !== copyFeedback) {currentFeedback.style.display = 'none';}
+            currentFeedback = copyFeedback;
+
+            copyIcon.classList.add('d-none');
+            checkIcon.classList.remove('d-none');
+            copyFeedback.style.display = 'block';
+            copyButton.style.borderColor = 'var(--color-success-fg)';
+
+            setTimeout(() => {
+                copyIcon.classList.remove('d-none');
+                checkIcon.classList.add('d-none');
+                copyFeedback.style.display = 'none';
+                copyButton.style.borderColor = '';
+            }, 2000);
+        });
+    });
+});
+
+</script>
+
+
+</html>
