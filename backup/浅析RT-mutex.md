@@ -30,12 +30,16 @@ RT-mutex解决优先级反转问题的方法是Priority Inheritance(PI)，即优
     Process:  A, B, C, D, E
     Mutexes:  L1, L2, L3, L4
 ```
+
 ![chain1](https://github.com/user-attachments/assets/b496e2d8-ab45-4f6e-a7cf-fd4c563b1e1e)
+
 PI chain的含义是：线程E等待锁L4，锁L4被线程D持有，线程D等待锁L3，L3被线程C持有，线程C等待锁L2，锁L2被线程B持有，线程B等待锁L1，锁L1被线程A持有。
 当这个PI chain存在时，五个线程的优先级应该满足处于链右边的线程的优先级应当不低于处于链左边的优先级。只有该条件满足时，无限制优先级反转问题才不会出现。
 
 当然，PI chain并不一定是单链，因为一把锁可能会有多个线程在等待。假设此时一个线程F申请锁L2，且F也有自己持有的锁L5，L5有一个等待者G。那么以A为链尾的PI chain就会和以F为链尾的PI chain合并为一个PI chain：
+
 ![chain2](https://github.com/user-attachments/assets/a1bcc712-5f98-438d-9d37-8e992271e693)
+
 思考一下，当F去尝试获取锁L2时，链上的优先级应该发生怎样的变化？如果F的优先级比同样在等待锁L2的C高，那么F的优先级应该顺着链往右传播，使得线程B和线程A的优先级至少不低于F。
 
 如果是线程G去获取L2呢？这种情况不可能发生，因为一个线程不会在多个锁上等待。但是一个锁可以有多个等待者。
