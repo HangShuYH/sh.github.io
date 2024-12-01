@@ -1,4 +1,3 @@
-# 浅析RT-mutex
 **Version: Linux 6.6.0**
 ## why RT-mutex
 PREEMPT_RT是将Linux转换为RTOS的一个史诗级的补丁，从Linux 6.12开始，所有发行版都将包含实时Linux的代码。PREEMPT_RT 的关键在于让Linux内核中不可抢占的代码尽可能减少，其中一个重要改进方向就是让spinlock变得可抢占，因此PREEMPT_RT引入了RT-mutex来代替spinlock。

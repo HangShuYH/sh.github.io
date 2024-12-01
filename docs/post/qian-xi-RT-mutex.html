@@ -10,13 +10,11 @@
         let theme = localStorage.getItem("meek_theme") || "light";
         document.documentElement.setAttribute("data-color-mode", theme);
     </script>
-<meta name="description" content="# 浅析RT-mutex
-**Version: Linux 6.6.0**
+<meta name="description" content="**Version: Linux 6.6.0**
 ## why RT-mutex
 PREEMPT_RT是将Linux转换为RTOS的一个史诗级的补丁，从Linux 6.12开始，所有发行版都将包含实时Linux的代码。">
 <meta property="og:title" content="浅析RT-mutex">
-<meta property="og:description" content="# 浅析RT-mutex
-**Version: Linux 6.6.0**
+<meta property="og:description" content="**Version: Linux 6.6.0**
 ## why RT-mutex
 PREEMPT_RT是将Linux转换为RTOS的一个史诗级的补丁，从Linux 6.12开始，所有发行版都将包含实时Linux的代码。">
 <meta property="og:type" content="article">
@@ -89,8 +87,7 @@ body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;
 </div>
 </div>
     <div id="content">
-<div class="markdown-body" id="postBody"><h1>浅析RT-mutex</h1>
-<p><strong>Version: Linux 6.6.0</strong></p>
+<div class="markdown-body" id="postBody"><p><strong>Version: Linux 6.6.0</strong></p>
 <h2>why RT-mutex</h2>
 <p>PREEMPT_RT是将Linux转换为RTOS的一个史诗级的补丁，从Linux 6.12开始，所有发行版都将包含实时Linux的代码。PREEMPT_RT 的关键在于让Linux内核中不可抢占的代码尽可能减少，其中一个重要改进方向就是让spinlock变得可抢占，因此PREEMPT_RT引入了RT-mutex来代替spinlock。</p>
 <p>在CONFIG_PREEMPT_RT未开启时，spinlock的底层实现实际是raw_spinlock。在获取raw_spinlock时，内核会关抢占。低优先级的线程只要在spinlock保护的临界区内，高优先级的线程都无法抢占CPU，实时性就无法得到保证。</p>
