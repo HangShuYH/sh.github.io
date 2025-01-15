@@ -346,7 +346,7 @@ try_to_take_mutex首先会将owner的bit0设置为1以避免快速路径。在�
 <span class="pl-c">			 * and we have no waiters to enqueue in @task</span>
 <span class="pl-c">			 * pi waiters tree.</span>
 <span class="pl-c">			 */</span>
-			goto takeit;
+			goto <span class="pl-ent">takeit</span>;
 		}
 	}
 
@@ -367,7 +367,7 @@ try_to_take_mutex首先会将owner的bit0设置为1以避免快速路径。在�
 		<span class="pl-en">rt_mutex_enqueue_pi</span>(<span class="pl-s1">task</span>, <span class="pl-en">rt_mutex_top_waiter</span>(<span class="pl-s1">lock</span>));
 	<span class="pl-en">raw_spin_unlock</span>(<span class="pl-c1">&amp;</span><span class="pl-s1">task</span><span class="pl-c1">-&gt;</span><span class="pl-c1">pi_lock</span>);
 
-takeit:
+<span class="pl-ent">takeit</span>:
 	<span class="pl-c">/*</span>
 <span class="pl-c">	 * This either preserves the RT_MUTEX_HAS_WAITERS bit if there</span>
 <span class="pl-c">	 * are still waiters or clears it.</span>
