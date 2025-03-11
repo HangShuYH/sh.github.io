@@ -1,4 +1,44 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>Blog Title</title><link>https://HangShuYH.github.io/sh.github.io</link><description>Blog description</description><copyright>Blog Title</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://github.githubassets.com/favicons/favicon.svg</url><title>avatar</title><link>https://HangShuYH.github.io/sh.github.io</link></image><lastBuildDate>Sun, 01 Dec 2024 04:31:08 +0000</lastBuildDate><managingEditor>Blog Title</managingEditor><ttl>60</ttl><webMaster>Blog Title</webMaster><item><title>浅析RT-mutex</title><link>https://HangShuYH.github.io/sh.github.io/post/qian-xi-RT-mutex.html</link><description>**Version: Linux 6.6.0**&#13;
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>Blog Title</title><link>https://HangShuYH.github.io/sh.github.io</link><description>Blog description</description><copyright>Blog Title</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://github.githubassets.com/favicons/favicon.svg</url><title>avatar</title><link>https://HangShuYH.github.io/sh.github.io</link></image><lastBuildDate>Tue, 11 Mar 2025 09:36:25 +0000</lastBuildDate><managingEditor>Blog Title</managingEditor><ttl>60</ttl><webMaster>Blog Title</webMaster><item><title>rustc_driver开发环境配置</title><link>https://HangShuYH.github.io/sh.github.io/post/rustc_driver-kai-fa-huan-jing-pei-zhi.html</link><description>本文旨在记录如何开发rustc_driver，并在vscode上实现编译器源码代码的提示和跳转
+
+## Rust安装
+```bash
+# 安装rustup管理rust的工具链
+~ curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf | sh
+# 查看安装是否成功
+~ rustup toolchain list
+stable-x86_64-unknown-linux-gnu (active, default)
+~ rustc -vV
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+binary: rustc
+commit-hash: 4d91de4e48198da2e33413efdcd9cd2cc0c46688
+commit-date: 2025-02-17
+host: x86_64-unknown-linux-gnu
+release: 1.85.0
+LLVM version: 19.1.7
+# 安装nightly版本, 开发插件只能用nightly版本
+~ cargo +nightly --version
+```
+vscode中需要安装rust-analyzer插件
+如果需要借助vscode进行调试，还需要安装codelldb
+
+## custom rustc_driver
+```bash
+~ cargo new my_rustc_driver
+~ cd my_rustc_driver
+~ cargo run
+# 项目输出hello world
+```
+复制下面代码到src/main.rs中
+```rust
+#![feature(rustc_private)]
+
+extern crate rustc_driver;
+fn main() {
+    println!('this is a custom driver!');
+    rustc_driver::main();
+}
+```
+再次运行cargo run会报错，因为rustc_driver找不到。</description><guid isPermaLink="true">https://HangShuYH.github.io/sh.github.io/post/rustc_driver-kai-fa-huan-jing-pei-zhi.html</guid><pubDate>Tue, 11 Mar 2025 09:35:58 +0000</pubDate></item><item><title>浅析RT-mutex</title><link>https://HangShuYH.github.io/sh.github.io/post/qian-xi-RT-mutex.html</link><description>**Version: Linux 6.6.0**&#13;
 ## why RT-mutex&#13;
 PREEMPT_RT是将Linux转换为RTOS的一个史诗级的补丁，从Linux 6.12开始，所有发行版都将包含实时Linux的代码。</description><guid isPermaLink="true">https://HangShuYH.github.io/sh.github.io/post/qian-xi-RT-mutex.html</guid><pubDate>Sat, 30 Nov 2024 11:48:09 +0000</pubDate></item></channel></rss>
